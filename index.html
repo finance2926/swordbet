@@ -124,7 +124,7 @@ footer{color:var(--ink-3);font-size:12px;border-top:1px solid var(--line);paddin
       <div><h2>Receita cobrada ao cliente</h2></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <span id="saveMsg" style="font-size:12.5px;color:var(--ink-3)"></span>
-        <button id="save" type="button">Guardar para todos</button>
+        <button id="save" type="button">Guardar agora</button>
         <button id="reset" type="button">Repor valores originais</button>
       </div>
     </div>
@@ -319,10 +319,15 @@ render(true);
 
 
 /* ---------- gravação partilhada (Cloudflare Worker) ---------- */
+const VERSION="v3";
 const saveBtn=document.getElementById("save"),saveMsg=document.getElementById("saveMsg");
-let lastServer="";
+let lastServer="",timer=null,saving=false;
 function setMsg(t){saveMsg.textContent=t;}
-function touch(){dirty=true;setMsg("Alterações por guardar.");}
+function host(){try{return new URL(API).host}catch(e){return "—"}}
+function touch(){
+  dirty=true;setMsg("A guardar daqui a pouco…");
+  clearTimeout(timer);timer=setTimeout(save,2000);
+}
 function payload(){return {roles:state.roles.map(r=>({funcao:r.funcao,equipa:r.equipa,pack:r.pack,custo:r.custo,ded:r.ded})),rev:state.rev,savedAt:new Date().toISOString()};}
 function apply(d){
   if(!d||!Array.isArray(d.roles)||!d.roles.length)return false;
@@ -333,37 +338,40 @@ function apply(d){
   return true;
 }
 function stamp(d){
-  if(!d||!d.savedAt){setMsg("");return;}
+  if(!d||!d.savedAt){setMsg("Pronto a gravar · "+host()+" · "+VERSION);return;}
   const t=new Date(d.savedAt);
-  setMsg("Última gravação: "+t.toLocaleString("pt-PT",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}));
+  setMsg("Guardado às "+t.toLocaleString("pt-PT",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+" · "+VERSION);
+}
+async function save(){
+  if(!API||saving)return;
+  saving=true;setMsg("A guardar…");
+  try{
+    const body=payload();
+    const r=await fetch(API+"/state",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    const res=await r.json().catch(()=>({}));
+    dirty=false;body.savedAt=res.savedAt||body.savedAt;lastServer=JSON.stringify(body);stamp(body);
+  }catch(e){
+    setMsg("Não gravou: "+(e&&e.message?e.message:"sem ligação")+" · servidor "+host());
+  }
+  saving=false;
 }
 async function load(first){
   if(!API){setMsg("Sem servidor configurado: as alterações ficam só neste ecrã.");saveBtn.hidden=true;return;}
   try{
     const r=await fetch(API+"/state",{cache:"no-store"});
-    if(!r.ok)throw 0;
+    if(!r.ok)throw new Error("HTTP "+r.status);
     const d=await r.json();
     const sig=JSON.stringify(d);
     if(sig===lastServer)return;
     lastServer=sig;
     if(apply(d)){render(true);stamp(d);}
-    else if(first)setMsg("Ainda não há valores guardados. Grava para criares a primeira versão.");
-  }catch(e){ if(first)setMsg("Não consegui ligar ao servidor. Podes mexer, mas não grava."); }
+    else if(first)setMsg("Ainda não há valores guardados · "+host()+" · "+VERSION);
+  }catch(e){ if(first)setMsg("Sem ligação ao servidor "+host()+": podes mexer, mas não grava."); }
 }
-saveBtn.addEventListener("click",async()=>{
-  if(!API)return;
-  saveBtn.disabled=true;setMsg("A guardar…");
-  try{
-    const body=payload();
-    const r=await fetch(API+"/state",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
-    if(!r.ok)throw 0;
-    dirty=false;lastServer=JSON.stringify(body);stamp(body);
-    setMsg("Guardado. Quem abrir o link passa a ver estes valores.");
-  }catch(e){setMsg("Não foi possível guardar. Tenta outra vez.");}
-  saveBtn.disabled=false;
-});
-setInterval(()=>{if(!dirty)load(false);},20000);
-addEventListener("focus",()=>{if(!dirty)load(false);});
+saveBtn.addEventListener("click",()=>{clearTimeout(timer);save();});
+setInterval(()=>{if(!dirty&&!saving)load(false);},20000);
+addEventListener("focus",()=>{if(!dirty&&!saving)load(false);});
 addEventListener("beforeunload",e=>{if(dirty){e.preventDefault();e.returnValue="";}});
 load(true);
 
